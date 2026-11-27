@@ -2,11 +2,13 @@
 """Rendu des visuels madebylba (gabarit SlideReseaux de la Charte LBA v2).
 
 Usage : python3 rendre.py post.json dossier_sortie
-post.json : {"id": "...", "format": "carrousel" | "story", "slides": [
+post.json : {"id": "...", "format": "carrousel" | "story" | "couverture", "slides": [
   {"type": "fort" | "clair" | "photo", "surtitre": "...", "titre": "Texte avec *mot clé*",
    "texte": "...", "photo": "chemin/vers/photo.jpg (type photo seulement)"}
 ]}
 Sort : <id>-1.png, <id>-2.png, ... (1080x1350 ou 1080x1920) et planche.png pour vérifier.
+Format « couverture » : couverture de story à la une (1080x1920), un seul champ utile par slide : "titre",
+un mot court (12 caractères au plus), centré dans un disque citron sur fond marine ; Instagram ne garde que le cercle central.
 """
 import html, json, os, re, sys
 from pathlib import Path
@@ -37,12 +39,21 @@ CSS = """
 .clair .t em{font-style:normal;background:#C8F03C;padding:0 .12em;box-decoration-break:clone;-webkit-box-decoration-break:clone}
 .p{margin:0;font-size:46px;line-height:1.45;max-width:880px}
 .clair .p{color:#0B1533}
+.couv{background:#13265C;background-image:radial-gradient(rgba(244,246,238,.10) 5px,transparent 5px);background-size:96px 96px;align-items:center;justify-content:center;padding:0}
+.disque{width:920px;height:920px;border-radius:50%%;background:#C8F03C;display:flex;align-items:center;justify-content:center;text-align:center;padding:60px}
+.disque span{font-family:Brico,sans-serif;font-weight:800;color:#13265C;line-height:1;letter-spacing:-.03em}
 """
 
 
 def titre_html(t):
     t = html.escape(t or "")
     return re.sub(r"\*(.+?)\*", r"<em>\1</em>", t)
+
+
+def couverture_html(s):
+    mot = (s.get("titre") or "").replace("*", "")
+    taille = 220 if len(mot) <= 5 else 168 if len(mot) <= 8 else 140
+    return '<section class="s couv"><div class="disque"><span style="font-size:%dpx">%s</span></div></section>' % (taille, html.escape(mot)), len(mot) > 12
 
 
 def slide_html(s, i, n, H):
@@ -70,21 +81,24 @@ def slide_html(s, i, n, H):
 def main():
     post = json.load(open(sys.argv[1], encoding="utf-8"))
     out = Path(sys.argv[2]); out.mkdir(parents=True, exist_ok=True)
-    H = 1920 if post.get("format") == "story" else 1350
+    H = 1920 if post.get("format") in ("story", "couverture") else 1350
     slides = post["slides"]
     fichiers = []
     with sync_playwright() as p:
         b = p.chromium.launch(args=["--no-sandbox"])
         pg = b.new_page(viewport={"width": 1080, "height": H})
         for i, s in enumerate(slides, 1):
-            corps, long_titre = slide_html(s, i, len(slides), H)
+            if post.get("format") == "couverture":
+                corps, long_titre = couverture_html(s)
+            else:
+                corps, long_titre = slide_html(s, i, len(slides), H)
             css = CSS % {"F": F, "H": H, "T": 88 if long_titre else 112}
             tmp = out / "_slide.html"
             tmp.write_text("<!doctype html><html lang=fr><head><meta charset=utf-8><style>%s</style></head><body>%s</body></html>" % (css, corps), encoding="utf-8")
             pg.goto(tmp.resolve().as_uri())
             pg.evaluate("document.fonts.ready")
             pg.wait_for_timeout(150)
-            debord = pg.evaluate("(()=>{const b=document.querySelector('.b');const t=document.querySelector('.top');return b&&t&&b.getBoundingClientRect().top<t.getBoundingClientRect().bottom+20})()")
+            debord = pg.evaluate("(()=>{const b=document.querySelector('.b');const t=document.querySelector('.top');if(b&&t)return b.getBoundingClientRect().top<t.getBoundingClientRect().bottom+20;const d=document.querySelector('.disque span');return !!d&&d.getBoundingClientRect().width>820})()") or (post.get("format") == "couverture" and long_titre)
             f = out / ("%s-%d.png" % (post["id"], i))
             pg.screenshot(path=str(f))
             fichiers.append(f)
